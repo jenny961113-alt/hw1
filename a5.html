@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>俄羅斯方塊</title>
+<style>
+*{box-sizing:border-box}
+body{
+  margin:0;
+  min-height:100vh;
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  background:radial-gradient(circle at top,#26345f,#0b1020 70%);
+  color:white;
+  font-family:Arial,"Microsoft JhengHei",sans-serif;
+}
+.game{
+  display:flex;
+  gap:24px;
+  padding:24px;
+  border-radius:20px;
+  background:rgba(10,15,35,.92);
+  box-shadow:0 20px 60px #0008;
+}
+canvas{
+  display:block;
+  border:3px solid #53618d;
+  background:#080c18;
+  border-radius:8px;
+}
+#board{width:300px;height:600px}
+.side{
+  width:180px;
+  display:flex;
+  flex-direction:column;
+  gap:16px;
+}
+h1{margin:0;font-size:28px}
+.panel{
+  padding:14px;
+  background:#171e38;
+  border-radius:12px;
+}
+.label{color:#9da9cf;font-size:13px}
+.value{font-size:25px;font-weight:bold;margin-top:4px}
+button{
+  border:0;
+  border-radius:10px;
+  padding:12px;
+  color:white;
+  background:#5865f2;
+  font-size:16px;
+  font-weight:bold;
+  cursor:pointer;
+}
+button:hover{background:#6975ff}
+.controls{
+  color:#aeb8d8;
+  font-size:13px;
+  line-height:1.8;
+}
+.mobile{
+  display:none;
+  grid-template-columns:repeat(3,1fr);
+  gap:8px;
+}
+.mobile button{padding:14px 5px}
+@media(max-width:600px){
+  .game{padding:12px;gap:12px}
+  #board{width:240px;height:480px}
+  .side{width:130px}
+  .mobile{display:grid}
+  .controls{display:none}
+}
+</style>
+</head>
+
+<body>
+<div class="game">
+  <canvas id="board" width="300" height="600"></canvas>
+
+  <div class="side">
+    <h1>俄羅斯方塊</h1>
+
+    <div class="panel">
+      <div class="label">分數</div>
+      <div class="value" id="score">0</div>
+    </div>
+
+    <div class="panel">
+      <div class="label">消除行數</div>
+      <div class="value" id="lines">0</div>
+    </div>
+
+    <div class="panel">
+      <div class="label">等級</div>
+      <div class="value" id="level">1</div>
+    </div>
+
+    <div class="panel">
+      <div class="label">下一個</div>
+      <canvas id="next" width="120" height="120"></canvas>
+    </div>
+
+    <button id="start">開始遊戲</button>
+    <button id="pause">暫停</button>
+
+    <div class="controls">
+      ← →：移動<br>
+      ↑：旋轉<br>
+      ↓：加速下降<br>
+      Space：直接落下<br>
+      P：暫停
+    </div>
+
+    <div class="mobile">
+      <button onclick="move(-1)">←</button>
+      <button onclick="rotate()">↻</button>
+      <button onclick="move(1)">→</button>
+      <button onclick="softDrop()">↓</button>
+      <button onclick="hardDrop()">⤓</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById("board");
+const ctx = canvas.getContext("2d");
+
+const nextCanvas = document.getElementById("next");
+const nextCtx = nextCanvas.getContext("2d");
+
+const COLS = 10;
+const ROWS = 20;
+const SIZE = 30;
+
+const colors = [
+  null,
+  "#00e5ff", // I
+  "#4169ff", // J
+  "#ff9f1c", // L
+  "#ffe047", // O
+  "#35e06f", // S
+  "#b45cff", // T
+  "#ff4d67"  // Z
+];
+
+const shapes = [
+  [[1,1,1,1]],
+  [[2,0,0],[2,2,2]],
+  [[0,0,3],[3,3,3]],
+  [[4,4],[4,4]],
+  [[0,5,5],[5,5,0]],
+  [[0,6,0],[6,6,6]],
+  [[7,7,0],[0,7,7]]
+];
+
+let board;
+let player;
+let nextPiece;
+let score = 0;
+let lines = 0;
+let level = 1;
+let dropCounter = 0;
+let lastTime = 0;
+let dropInterval = 800;
+let running = false;
+let paused = false;
+let audioCtx;
+
+// ---------- 音效 ----------
+function initAudio(){
+  if(!audioCtx){
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if(audioCtx.state === "suspended") audioCtx.resume();
+}
+
+function sound(type){
+  initAudio();
+
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+
+  const now = audioCtx.currentTime;
+
+  if(type === "move"){
+    osc.frequency.setValueAtTime(220,now);
+    osc.frequency.exponentialRampToValueAtTime(280,now+.05);
+    gain.gain.setValueAtTime(.06,now);
+    gain.gain.exponentialRampToValueAtTime(.001,now+.07);
+    osc.start(now);
+    osc.stop(now+.07);
+  }
+
+  if(type === "rotate"){
+    osc.frequency.setValueAtTime(330,now);
+    osc.frequency.exponentialRampToValueAtTime(520,now+.08);
+    gain.gain.setValueAtTime(.08,now);
+    gain.gain.exponentialRampToValueAtTime(.001,now+.1);
+    osc.start(now);
+    osc.stop(now+.1);
+  }
+
+  if(type === "drop"){
+    osc.type="square";
+    osc.frequency.setValueAtTime(120,now);
+    osc.frequency.exponentialRampToValueAtTime(55,now+.12);
+    gain.gain.setValueAtTime(.12,now);
+    gain.gain.exponentialRampToValueAtTime(.001,now+.13);
+    osc.start(now);
+    osc.stop(now+.13);
+  }
+
+  if(type === "line"){
+    osc.type="sine";
+    osc.frequency.setValueAtTime(440,now);
+    osc.frequency.exponentialRampToValueAtTime(880,now+.18);
+    gain.gain.setValueAtTime(.15,now);
+    gain.gain.exponentialRampToValueAtTime(.001,now+.22);
+    osc.start(now);
+    osc.stop(now+.22);
+  }
+
+  if(type === "gameover"){
+    osc.type="sawtooth";
+    osc.frequency.setValueAtTime(300,now);
+    osc.frequency.exponentialRampToValueAtTime(70,now+.6);
+    gain.gain.setValueAtTime(.16,now);
+    gain.gain.exponentialRampToValueAtTime(.001,now+.6);
+    osc.start(now);
+    osc.stop(now+.6);
+  }
+}
+
+// ---------- 遊戲 ----------
+function createBoard(){
+  return Array.from({length:ROWS},()=>Array(COLS).fill(0));
+}
+
+function randomPiece(){
+  const index = Math.floor(Math.random()*shapes.length);
+  return {
+    matrix: shapes[index].map(row=>row.slice()),
+    x: 0,
+    y: 0
+  };
+}
+
+function spawn(){
+  player = nextPiece || randomPiece();
+  nextPiece = randomPiece();
+
+  player.x = Math.floor((COLS-player.matrix[0].length)/2);
+  player.y = 0;
+
+  drawNext();
+
+  if(collides(player)){
+    running = false;
+    sound("gameover");
+    setTimeout(()=>{
+      alert("遊戲結束！\n你的分數：" + score);
+    },100);
+  }
+}
+
+function collides(p){
+  for(let y=0;y<p.matrix.length;y++){
+    for(let x=0;x<p.matrix[y].length;x++){
+      if(!p.matrix[y][x]) continue;
+
+      const bx=p.x+x;
+      const by=p.y+y;
+
+      if(
+        bx<0 ||
+        bx>=COLS ||
+        by>=ROWS ||
+        (by>=0 && board[by][bx])
+      ) return true;
+    }
+  }
+  return false;
+}
+
+function merge(){
+  player.matrix.forEach((row,y)=>{
+    row.forEach((value,x)=>{
+      if(value){
+        board[player.y+y][player.x+x]=value;
+      }
+    });
+  });
+}
+
+function move(dir){
+  if(!running || paused) return;
+
+  player.x += dir;
+
+  if(collides(player)){
+    player.x -= dir;
+  }else{
+    sound("move");
+  }
+
+  draw();
+}
+
+function softDrop(){
+  if(!running || paused) return;
+
+  player.y++;
+
+  if(collides(player)){
+    player.y--;
+    lock();
+  }else{
+    score++;
+  }
+
+  dropCounter=0;
+  updateUI();
+  draw();
+}
+
+function hardDrop(){
+  if(!running || paused) return;
+
+  let distance=0;
+
+  while(!collides(player)){
+    player.y++;
+    distance++;
+  }
+
+  player.y--;
+  distance--;
+
+  score += Math.max(0,distance)*2;
+  sound("drop");
+  lock();
+}
+
+function lock(){
+  merge();
+  clearLines();
+  spawn();
+  dropCounter=0;
+}
+
+function rotateMatrix(matrix){
+  return matrix[0].map((_,i)=>
+    matrix.map(row=>row[i]).reverse()
+  );
+}
+
+function rotate(){
+  if(!running || paused) return;
+
+  const old=player.matrix;
+  const oldX=player.x;
+
+  player.matrix=rotateMatrix(player.matrix);
+
+  let offset=0;
+
+  while(collides(player)){
+    player.x += offset;
+
+    offset = offset > 0 ? -offset : -offset+1;
+
+    if(offset > player.matrix[0].length){
+      player.matrix=old;
+      player.x=oldX;
+      return;
+    }
+  }
+
+  sound("rotate");
+  draw();
+}
+
+function clearLines(){
+  let cleared=0;
+
+  outer:
+  for(let y=ROWS-1;y>=0;y--){
+    for(let x=0;x<COLS;x++){
+      if(!board[y][x]) continue outer;
+    }
+
+    board.splice(y,1);
+    board.unshift(Array(COLS).fill(0));
+    y++;
+    cleared++;
+  }
+
+  if(cleared){
+    const points=[0,100,300,500,800];
+    score += points[cleared]*level;
+    lines += cleared;
+    level = Math.floor(lines/10)+1;
+    dropInterval=Math.max(80,800-(level-1)*65);
+    sound("line");
+  }
+
+  updateUI();
+}
+
+function update(time=0){
+  if(!running){
+    draw();
+    return;
+  }
+
+  const delta=time-lastTime;
+  lastTime=time;
+
+  if(!paused){
+    dropCounter += delta;
+
+    if(dropCounter > dropInterval){
+      player.y++;
+
+      if(collides(player)){
+        player.y--;
+        lock();
+      }
+
+      dropCounter=0;
+    }
+
+    draw();
+  }
+
+  requestAnimationFrame(update);
+}
+
+// ---------- 繪圖 ----------
+function drawCell(context,x,y,value,size){
+  context.fillStyle=colors[value];
+  context.fillRect(x*size,y*size,size,size);
+
+  context.strokeStyle="rgba(255,255,255,.18)";
+  context.lineWidth=1;
+  context.strokeRect(x*size,y*size,size,size);
+
+  // 高光
+  context.fillStyle="rgba(255,255,255,.18)";
+  context.fillRect(
+    x*size+3,
+    y*size+3,
+    size-6,
+    4
+  );
+}
+
+function drawMatrix(matrix,offsetX,offsetY,context=ctx,size=SIZE){
+  matrix.forEach((row,y)=>{
+    row.forEach((value,x)=>{
+      if(value){
+        drawCell(
+          context,
+          x+offsetX,
+          y+offsetY,
+          value,
+          size
+        );
+      }
+    });
+  });
+}
+
+function draw(){
+  ctx.fillStyle="#080c18";
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // 網格
+  ctx.strokeStyle="rgba(255,255,255,.045)";
+  for(let x=0;x<=COLS;x++){
+    ctx.beginPath();
+    ctx.moveTo(x*SIZE,0);
+    ctx.lineTo(x*SIZE,canvas.height);
+    ctx.stroke();
+  }
+
+  for(let y=0;y<=ROWS;y++){
+    ctx.beginPath();
+    ctx.moveTo(0,y*SIZE);
+    ctx.lineTo(canvas.width,y*SIZE);
+    ctx.stroke();
+  }
+
+  board.forEach((row,y)=>{
+    row.forEach((value,x)=>{
+      if(value) drawCell(ctx,x,y,value,SIZE);
+    });
+  });
+
+  if(player){
+    drawMatrix(player.matrix,player.x,player.y);
+  }
+
+  if(paused){
+    ctx.fillStyle="rgba(0,0,0,.65)";
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    ctx.fillStyle="white";
+    ctx.font="bold 36px Arial";
+    ctx.textAlign="center";
+    ctx.fillText("暫停",canvas.width/2,canvas.height/2);
+  }
+}
+
+function drawNext(){
+  nextCtx.fillStyle="#080c18";
+  nextCtx.fillRect(0,0,120,120);
+
+  const m=nextPiece.matrix;
+  const size=25;
+  const ox=(120-m[0].length*size)/size/2;
+  const oy=(120-m.length*size)/size/2;
+
+  drawMatrix(m,ox,oy,nextCtx,size);
+}
+
+function updateUI(){
+  document.getElementById("score").textContent=score;
+  document.getElementById("lines").textContent=lines;
+  document.getElementById("level").textContent=level;
+}
+
+// ---------- 開始 / 暫停 ----------
+function startGame(){
+  initAudio();
+
+  board=createBoard();
+  score=0;
+  lines=0;
+  level=1;
+  dropInterval=800;
+  dropCounter=0;
+  paused=false;
+  running=true;
+
+  nextPiece=randomPiece();
+  spawn();
+  updateUI();
+
+  lastTime=performance.now();
+  requestAnimationFrame(update);
+}
+
+function togglePause(){
+  if(!running) return;
+
+  paused=!paused;
+  document.getElementById("pause").textContent =
+    paused ? "繼續" : "暫停";
+
+  draw();
+}
+
+document.getElementById("start").onclick=startGame;
+document.getElementById("pause").onclick=togglePause;
+
+// ---------- 鍵盤 ----------
+document.addEventListener("keydown",e=>{
+  if(e.code==="ArrowLeft"){
+    e.preventDefault();
+    move(-1);
+  }
+
+  if(e.code==="ArrowRight"){
+    e.preventDefault();
+    move(1);
+  }
+
+  if(e.code==="ArrowDown"){
+    e.preventDefault();
+    softDrop();
+  }
+
+  if(e.code==="ArrowUp"){
+    e.preventDefault();
+    rotate();
+  }
+
+  if(e.code==="Space"){
+    e.preventDefault();
+    hardDrop();
+  }
+
+  if(e.key.toLowerCase()==="p"){
+    togglePause();
+  }
+});
+
+// 初始畫面
+board=createBoard();
+draw();
+updateUI();
+</script>
+</body>
+</html>

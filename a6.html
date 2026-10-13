@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>星際突擊｜太空射擊</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; min-height: 100vh; display: grid; place-items: center; overflow: hidden; background: #050817; color: #eaf8ff; font-family: system-ui, sans-serif; }
+        .game { position: relative; width: min(100vw, 440px); height: min(100vh, 760px); overflow: hidden; border: 1px solid #42649c; background: #070d22; box-shadow: 0 0 36px #247bff55; }
+        canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+        .hud { position: absolute; top: 14px; left: 18px; right: 18px; display: flex; justify-content: space-between; font-weight: 700; text-shadow: 0 0 10px #28dfff; pointer-events: none; }
+        .hud span { color: #68eaff; }
+        .overlay { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; background: #030716c9; }
+        .overlay[hidden] { display: none; }
+        h1 { margin: 0; color: #75edff; font-size: clamp(2rem, 9vw, 3rem); text-shadow: 0 0 20px #12aeff; }
+        p { color: #c6d8f1; line-height: 1.65; }
+        button { border: 1px solid #75edff; border-radius: 24px; padding: 11px 26px; color: #061124; background: #75edff; font: inherit; font-weight: 800; cursor: pointer; }
+        #sound { position: absolute; right: 10px; bottom: 10px; padding: 7px 10px; color: white; background: #111b35; border-color: #526f9e; font-size: .8rem; }
+        .small { font-size: .82rem; opacity: .8; }
+    </style>
+</head>
+<body>
+    <main class="game">
+        <canvas id="screen" aria-label="太空射擊遊戲"></canvas>
+        <div class="hud"><div>分數 <span id="score">0</span></div><div>生命 <span id="lives">❤❤❤</span></div></div>
+        <button id="sound" type="button">🔊 音效開</button>
+        <section class="overlay" id="overlay"><div><h1 id="heading">星際突擊</h1><p id="message">擊落來襲敵機，保衛銀河！<br>電腦：← → 或 A、D 移動，空白鍵射擊<br>手機：拖曳戰機移動並射擊</p><button id="start" type="button">開始遊戲</button><p class="small">音效由瀏覽器即時合成</p></div></section>
+    </main>
+    <script>
+        (() => {
+            const canvas = document.querySelector('#screen'), ctx = canvas.getContext('2d');
+            const scoreEl = document.querySelector('#score'), livesEl = document.querySelector('#lives');
+            const overlay = document.querySelector('#overlay'), heading = document.querySelector('#heading'), message = document.querySelector('#message'), startBtn = document.querySelector('#start'), soundBtn = document.querySelector('#sound');
+            let width, height, player, stars = [], bullets = [], enemies = [], keys = {}, pointerDown = false;
+            let running = false, score = 0, lives = 3, last = 0, lastShot = 0, spawnTime = 0, muted = false, audio;
+            function resize() {
+                const rect = canvas.getBoundingClientRect(), ratio = Math.min(devicePixelRatio || 1, 2);
+                canvas.width = rect.width * ratio; canvas.height = rect.height * ratio; ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+                width = rect.width; height = rect.height;
+                if (!player) player = { x: width / 2, y: height - 65 };
+                player.x = Math.max(16, Math.min(width - 16, player.x));
+                stars = Array.from({ length: 80 }, () => ({ x: Math.random() * width, y: Math.random() * height, size: Math.random() * 1.7 + .4, speed: 20 + Math.random() * 55 }));
+            }
+            function beep(freq, duration, type = 'sine', end = freq, volume = .035) {
+                if (muted) return;
+                try {
+                    audio ||= new (window.AudioContext || window.webkitAudioContext)();
+                    if (audio.state === 'suspended') audio.resume();
+                    const osc = audio.createOscillator(), gain = audio.createGain();
+                    osc.type = type; osc.frequency.setValueAtTime(freq, audio.currentTime); osc.frequency.exponentialRampToValueAtTime(Math.max(1, end), audio.currentTime + duration);
+                    gain.gain.setValueAtTime(volume, audio.currentTime); gain.gain.exponentialRampToValueAtTime(.001, audio.currentTime + duration);
+                    osc.connect(gain); gain.connect(audio.destination); osc.start(); osc.stop(audio.currentTime + duration);
+                } catch (_) {}
+            }
+            function begin() {
+                score = 0; lives = 3; bullets = []; enemies = []; player = { x: width / 2, y: height - 65 };
+                scoreEl.textContent = '0'; livesEl.textContent = '❤❤❤'; heading.textContent = '星際突擊';
+                overlay.hidden = true; running = true; last = performance.now(); beep(440, .16, 'triangle', 880); requestAnimationFrame(frame);
+            }
+            function finish() {
+                running = false; heading.textContent = '任務結束'; message.innerHTML = `最終分數：<strong>${score}</strong><br>再試一次，成為銀河王牌！`;
+                startBtn.textContent = '重新開始'; overlay.hidden = false; beep(220, .45, 'sawtooth', 65, .05);
+            }
+            function ship(x, y, enemy = false) {
+                ctx.save(); ctx.translate(x, y); ctx.fillStyle = enemy ? '#ff557c' : '#6df3ff'; ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 13; ctx.beginPath();
+                if (enemy) { ctx.moveTo(0, 16); ctx.lineTo(-14, -10); ctx.lineTo(0, -5); ctx.lineTo(14, -10); }
+                else { ctx.moveTo(0, -18); ctx.lineTo(-14, 13); ctx.lineTo(-5, 9); ctx.lineTo(0, 14); ctx.lineTo(5, 9); ctx.lineTo(14, 13); }
+                ctx.closePath(); ctx.fill(); ctx.restore();
+            }
+            function frame(now) {
+                if (!running) return;
+                const dt = Math.min((now - last) / 1000, .04); last = now;
+                ctx.fillStyle = '#070d22'; ctx.fillRect(0, 0, width, height);
+                ctx.fillStyle = '#b9dcff';
+                for (const s of stars) { s.y += s.speed * dt; if (s.y > height) { s.y = 0; s.x = Math.random() * width; } ctx.globalAlpha = .35 + s.size / 3; ctx.fillRect(s.x, s.y, s.size, s.size); }
+                ctx.globalAlpha = 1;
+                if (keys.ArrowLeft || keys.a || keys.A) player.x -= 260 * dt;
+                if (keys.ArrowRight || keys.d || keys.D) player.x += 260 * dt;
+                player.x = Math.max(16, Math.min(width - 16, player.x)); ship(player.x, player.y);
+                if ((keys[' '] || pointerDown) && now - lastShot > 190) { bullets.push({ x: player.x, y: player.y - 18 }); lastShot = now; beep(700, .07, 'square', 350, .016); }
+                ctx.fillStyle = '#8ffcff'; ctx.shadowColor = '#40eaff'; ctx.shadowBlur = 10;
+                for (const b of bullets) { b.y -= 430 * dt; ctx.fillRect(b.x - 2, b.y - 8, 4, 13); }
+                ctx.shadowBlur = 0; bullets = bullets.filter(b => b.y > -15);
+                spawnTime += dt;
+                if (spawnTime > Math.max(.32, .85 - score * .004)) { enemies.push({ x: 20 + Math.random() * (width - 40), y: -20, speed: 85 + Math.random() * 65 + score * .35 }); spawnTime = 0; }
+                for (let i = enemies.length - 1; i >= 0; i--) {
+                    const e = enemies[i]; e.y += e.speed * dt; ship(e.x, e.y, true);
+                    const hit = bullets.findIndex(b => Math.hypot(e.x - b.x, e.y - b.y) < 22);
+                    if (hit !== -1) { bullets.splice(hit, 1); enemies.splice(i, 1); score += 10; scoreEl.textContent = score; beep(180, .15, 'triangle', 720, .045); continue; }
+                    if (e.y > height + 20 || Math.hypot(e.x - player.x, e.y - player.y) < 25) {
+                        enemies.splice(i, 1); lives--; livesEl.textContent = lives ? '❤'.repeat(lives) : '—'; beep(130, .24, 'sawtooth', 55, .05);
+                        if (!lives) { finish(); break; }
+                    }
+                }
+                if (running) requestAnimationFrame(frame);
+            }
+            function pointerMove(event) { const rect = canvas.getBoundingClientRect(); player.x = event.clientX - rect.left; }
+            canvas.addEventListener('pointerdown', event => { pointerDown = true; canvas.setPointerCapture(event.pointerId); pointerMove(event); });
+            canvas.addEventListener('pointermove', event => { if (pointerDown) pointerMove(event); });
+            canvas.addEventListener('pointerup', () => pointerDown = false);
+            window.addEventListener('keydown', event => { if (['ArrowLeft', 'ArrowRight', ' '].includes(event.key)) event.preventDefault(); keys[event.key] = true; });
+            window.addEventListener('keyup', event => { keys[event.key] = false; });
+            startBtn.addEventListener('click', begin);
+            soundBtn.addEventListener('click', () => { muted = !muted; soundBtn.textContent = muted ? '🔇 音效關' : '🔊 音效開'; if (!muted) beep(500, .1); });
+            window.addEventListener('resize', resize); resize();
+        })();
+    </script>
+</body>
+</html>
